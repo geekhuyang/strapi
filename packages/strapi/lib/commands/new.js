@@ -14,10 +14,8 @@ const path = require('path');
 const _ = require('lodash');
 const fetch = require('node-fetch');
 const { machineIdSync } = require('node-machine-id');
+const uuid = require('uuid/v4');
 const execa = require('execa');
-
-// Master of ceremonies for generators.
-const generate = require('strapi-generate');
 
 // Local Strapi dependencies.
 const packageJSON = require('../../package.json');
@@ -28,33 +26,39 @@ const packageJSON = require('../../package.json');
  * Generate a new Strapi application.
  */
 
-const logError = error => {
-  fetch('https://analytics.strapi.io/track', {
+const logError = (scope, error) => {
+  return fetch('https://analytics.strapi.io/track', {
     method: 'POST',
     body: JSON.stringify({
-      event: 'didNotStartAutomatically',
-      deviceId: machineIdSync(),
+      event: 'didNotCreateProject',
+      uuid: scope.uuid,
+      deviceId: scope.deviceId,
       properties: {
-        error,
+        error: typeof error == 'string' ? error : error && error.message,
         os: os.type(),
+        version: scope.strapiPackageJSON.version,
       },
     }),
+    timeout: 1000,
     headers: { 'Content-Type': 'application/json' },
   }).catch(() => {});
 };
 
-module.exports = function(name, cliArguments) {
+module.exports = function(location, cliArguments) {
   console.log('🚀 Creating your Strapi application.\n');
 
   // Build initial scope.
+  const rootPath = path.resolve(location);
   const scope = {
-    rootPath: process.cwd(),
+    rootPath,
     strapiRoot: path.resolve(__dirname, '..'),
     generatorType: 'new',
-    name,
+    name: path.basename(rootPath),
     strapiPackageJSON: packageJSON,
     debug: cliArguments.debug !== undefined,
     quick: cliArguments.quickstart !== undefined,
+    uuid: 'testing', //uuid(),
+    deviceId: machineIdSync(),
   };
 
   const dbArguments = [
@@ -98,42 +102,50 @@ module.exports = function(name, cliArguments) {
     };
   }
 
-  // Return the scope and the response (`error` or `success`).
-  return generate(scope, {
-    // Log and exit the REPL in case there is an error
-    // while we were trying to generate the new app.
-    error(err) {
-      logError(err);
-      console.log(err);
-      process.exit(1);
-    },
+  const onError = err => {
+    console.log('Error', err);
+    logError(scope, err).then(
+      () => {
+        process.exit(1);
+      },
+      () => {
+        process.exit(1);
+      }
+    );
+  };
 
-    success: async () => {
-      if (scope.quick) {
-        // Create interface for windows user to let them quit the program.
-        if (process.platform === 'win32') {
-          const rl = require('readline').createInterface({
-            input: process.stdin,
-            output: process.stdout,
-          });
-
-          rl.on('SIGINT', function() {
-            process.emit('SIGINT');
-          });
-        }
-        // Listen Ctrl+C / SIGINT event to close the process.
-        process.on('SIGINT', function() {
-          process.exit();
+  const onSuccess = async () => {
+    if (scope.quick) {
+      // Create interface for windows user to let them quit the program.
+      if (process.platform === 'win32') {
+        const rl = require('readline').createInterface({
+          input: process.stdin,
+          output: process.stdout,
         });
 
-        await execa('npm', ['run', 'develop'], {
-          stdio: 'inherit',
-          cwd: scope.rootPath,
-          env: {
-            FORCE_COLOR: 1,
-          },
+        rl.on('SIGINT', function() {
+          process.emit('SIGINT');
         });
       }
-    },
-  });
+      // Listen Ctrl+C / SIGINT event to close the process.
+      process.on('SIGINT', function() {
+        process.exit();
+      });
+
+      await execa('npm', ['run', 'develop'], {
+        stdio: 'inherit',
+        cwd: scope.rootPath,
+        env: {
+          FORCE_COLOR: 1,
+        },
+      });
+    }
+  };
+
+  require('strapi-generate-new')(scope)
+    .then(onSuccess, onError)
+    .catch(err => {
+      console.log(err);
+      process.exit(1);
+    });
 };
